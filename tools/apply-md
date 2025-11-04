@@ -1,0 +1,175 @@
+#!/bin/bash
+
+# apply-md - Markdown Code Applier
+# Extracts code blocks from markdown and applies changes to the filesystem
+
+# Default values
+DRY_RUN=false
+CREATE_MISSING=false
+VERBOSE=false
+
+# Parse arguments
+while [[ "$#" -gt 0 ]]; do
+	case $1 in
+	--dry-run)
+		DRY_RUN=true
+		shift
+		;;
+	--create-missing)
+		CREATE_MISSING=true
+		shift
+		;;
+	--verbose)
+		VERBOSE=true
+		shift
+		;;
+	--help | -h)
+		echo "Usage: apply-md [options]"
+		echo ""
+		echo "Options:"
+		echo "  --dry-run         Preview changes without applying them"
+		echo "  --create-missing  Create files that don't exist"
+		echo "  --verbose         Show detailed output about changes"
+		echo "  --help, -h        Show this help message"
+		exit 0
+		;;
+	*)
+		echo "Unknown parameter: $1"
+		exit 1
+		;;
+	esac
+done
+
+# Read markdown content from stdin
+MARKDOWN=$(cat)
+
+# Create temporary directory
+TEMP_DIR=$(mktemp -d)
+FILES_FILE="$TEMP_DIR/files.txt"
+
+# Setup cleanup trap directly without a function
+# shellcheck disable=SC2064
+trap "rm -rf '$TEMP_DIR'" EXIT
+
+# Extract code blocks and their file names
+extract_blocks() {
+	local current_file=""
+	local in_block=false
+	local temp_file=""
+
+	echo "$MARKDOWN" | while IFS= read -r line; do
+		if [[ "$line" =~ ^[[:space:]]*\`\`\`([a-zA-Z0-9\+\-\/]+)[[:space:]]+(.+) ]]; then
+			current_file="${BASH_REMATCH[2]}"
+			in_block=true
+			temp_file="$TEMP_DIR/$current_file"
+			mkdir -p "$(dirname "$temp_file")"
+			: >"$temp_file" # Create empty file
+			if [ "$VERBOSE" = true ]; then
+				echo "Starting code block for file: $current_file"
+			fi
+			continue
+		fi
+
+		if [[ "$line" =~ ^[[:space:]]*\`\`\`[[:space:]]*$ ]]; then
+			if [ -n "$current_file" ] && [ "$in_block" = true ]; then
+				echo "$current_file" >>"$FILES_FILE"
+				if [ "$VERBOSE" = true ]; then
+					echo "Completed code block for file: $current_file"
+				fi
+			fi
+			in_block=false
+			current_file=""
+			temp_file=""
+			continue
+		fi
+
+		if [ "$in_block" = true ] && [ -n "$current_file" ] && [ -n "$temp_file" ]; then
+			echo "$line" >>"$temp_file"
+		fi
+	done
+}
+
+# Apply a single code block to a file
+apply_block() {
+	local file="$1"
+	local content_file="$TEMP_DIR/$file"
+
+	if [ ! -f "$content_file" ]; then
+		echo "Error: Content file not found for $file"
+		return
+	fi
+
+	if [ ! -f "$file" ]; then
+		if [ "$CREATE_MISSING" = true ]; then
+			if [ "$DRY_RUN" = false ]; then
+				mkdir -p "$(dirname "$file")"
+				cat "$content_file" >"$file"
+				echo "Created file: $file"
+			else
+				echo "[DRY RUN] Would create file: $file"
+				if [ "$VERBOSE" = true ]; then
+					echo "---"
+					cat "$content_file"
+					echo "---"
+				fi
+			fi
+		else
+			echo "Warning: File does not exist and --create-missing not specified: $file"
+		fi
+		return
+	fi
+
+	# Check for changes
+	if diff -q "$file" "$content_file" >/dev/null; then
+		if [ "$VERBOSE" = true ]; then
+			echo "No changes needed for: $file"
+		fi
+		return
+	fi
+
+	if [ "$VERBOSE" = true ]; then
+		echo "Changes for $file:"
+		diff -u "$file" "$content_file"
+		echo ""
+	else
+		echo "Modifying: $file"
+	fi
+
+	if [ "$DRY_RUN" = false ]; then
+		cat "$content_file" >"$file"
+		echo "Updated file: $file"
+	else
+		echo "[DRY RUN] Would update file: $file"
+	fi
+}
+
+# Main process
+if [ "$VERBOSE" = true ]; then
+	echo "Starting markdown code application..."
+	if [ "$DRY_RUN" = true ]; then
+		echo "Running in DRY RUN mode (no changes will be applied)"
+	fi
+fi
+
+extract_blocks
+
+if [ ! -f "$FILES_FILE" ] || [ ! -s "$FILES_FILE" ]; then
+	echo "No code blocks found in the markdown input."
+	exit 0
+fi
+
+while IFS= read -r file; do
+	apply_block "$file"
+done <"$FILES_FILE"
+
+file_count=$(wc -l <"$FILES_FILE")
+if [ "$VERBOSE" = true ]; then
+	echo ""
+	echo "Process complete."
+	echo "Found $file_count code blocks in the markdown input."
+	if [ "$DRY_RUN" = true ]; then
+		echo "This was a dry run. No changes were applied."
+	fi
+fi
+
+exit 0

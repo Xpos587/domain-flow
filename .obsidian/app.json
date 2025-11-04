@@ -1,0 +1,23 @@
+{
+  "promptDelete": false,
+  "showUnsupportedFiles": false,
+  "focusNewTab": true,
+  "showLineNumber": true,
+  "spellcheck": false,
+  "useTab": false,
+  "alwaysUpdateLinks": true,
+  "readableLineLength": false,
+  "tabSize": 2,
+  "userIgnoreFilters": [
+    "node_modules/",
+    "tools/",
+    ".logs/",
+    ".ruff_cache/",
+    ".mcps/",
+    ".githooks/",
+    ".github/",
+    "logs"
+  ],
+  "showInlineTitle": false,
+  "vimMode": true
+}

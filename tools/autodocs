@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# autodocs - Automatically update documentation for scripts
+# Updates individual doc files and README.md based on script content
+
+set -ex
+
+# Get script directory (works even when called from other directories)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+
+# Ensure all commands run from the script's directory
+cd "$SCRIPT_DIR"
+
+# List of scripts to process
+SCRIPTS=("apply-md" "context" "git-context")
+
+echo "Updating documentation files..."
+
+# Process each script
+for script in "${SCRIPTS[@]}"; do
+	if [ -f "$script" ]; then
+		echo "Generating docs for $script..."
+
+		# Define the doc path
+		DOC_PATH="docs/${script}.md"
+
+		./context "$DOC_PATH" "$script" --no-prompt --no-ls-files >tmp-context.md
+		claude -p "Fix $DOC_PATH to match script. Output it verbatim and nothing else. DO NOT MODIFY ANYTHING ELSE. Do not wrap into \`\`\` code block." <tmp-context.md >"$DOC_PATH"
+
+		echo "Updated $DOC_PATH"
+		echo ""
+	else
+		echo "Warning: Script $script not found, skipping" >&2
+	fi
+done
+
+# Update README.md based on all doc files
+echo "Updating README.md..."
+
+./context README.md "docs/*.md" --no-ls-files >tmp-context.md
+claude -p "Fix README.md to match individual scripts documentation. Output whole file verbatim and nothing else. DO NOT MODIFY ANYTHING ELSE. Do not wrap into \`\`\` code block." <tmp-context.md >README.md
+
+echo "Documentation update complete!"
+rm tmp-context.md
+exit 0

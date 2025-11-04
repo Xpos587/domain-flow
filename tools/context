@@ -1,0 +1,256 @@
+#!/bin/bash
+
+# context - Simplified Code Context Generator
+# Generates contextual information from a codebase to send to an LLM
+
+# Get script directory (works even when called from other directories)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+
+# Default values
+INCLUDE=()
+EXCLUDE=()
+MAX_SIZE="500KB"
+INCLUDE_GIT=false
+SHOW_FILE_SIZES=false
+PROMPT_FILE="$SCRIPT_DIR/../.claude/prompts/context_prompt.md"
+INCLUDE_PROMPT=true
+
+# Check for ripgrep availability
+if ! command -v rg >/dev/null 2>&1; then
+	echo "Error: ripgrep (rg) is required but not installed" >&2
+	exit 1
+fi
+
+# Check for fd/fdfind availability
+FD_CMD="fd"
+if ! command -v fd >/dev/null 2>&1; then
+	if command -v fdfind >/dev/null 2>&1; then
+		FD_CMD="fdfind"
+	else
+		echo "Error: fd/fdfind is required but not installed" >&2
+		exit 1
+	fi
+fi
+
+# Parse arguments
+while [[ "$#" -gt 0 ]]; do
+	case $1 in
+	--include=*)
+		INCLUDE+=("${1#*=}")
+		shift
+		;;
+	--exclude=*)
+		EXCLUDE+=("${1#*=}")
+		shift
+		;;
+	--max-size=*)
+		MAX_SIZE="${1#*=}"
+		shift
+		;;
+	--git)
+		INCLUDE_GIT=true
+		shift
+		;;
+	--show-sizes)
+		SHOW_FILE_SIZES=true
+		shift
+		;;
+	--prompt=*)
+		PROMPT_FILE="${1#*=}"
+		shift
+		;;
+	--no-prompt)
+		INCLUDE_PROMPT=false
+		shift
+		;;
+	--help | -h)
+		echo "Usage: context [options] [include-pattern1 include-pattern2 ...]"
+		echo ""
+		echo "Options:"
+		echo "  --include=<pattern>      File pattern to include (e.g., \"src/*.js\")"
+		echo "  --exclude=<pattern>      File pattern to exclude (e.g., \"node_modules/**\")"
+		echo "  --max-size=<size>        Maximum context size in KB/MB (e.g., \"500KB\")"
+		echo "  --git                    Include basic git information (recent commits, branch)"
+		echo "  --show-sizes             Include file sizes in output"
+		echo "  --no-ls-files            Don't include git ls-files output in repository map"
+		echo "  --prompt=<file>          Use custom context prompt from file (default: .claude/prompts/context_prompt.md)"
+		echo "  --no-prompt              Don't include context prompt"
+		echo "  --help, -h               Show this help message"
+		echo ""
+		echo "Dependencies:"
+		echo "  - ripgrep (rg)           Required for fast pattern matching"
+		echo "  - fd/fdfind              Required for fast file finding"
+		echo ""
+		echo "Pattern matching:"
+		echo "  Patterns use fd command syntax with glob patterns"
+		echo "  Examples:"
+		echo "    \"*.js\"               - All JavaScript files in current directory"
+		echo "    \"src/*.js\"           - All JavaScript files in src directory"
+		echo "    \"src/**/*.js\"        - All JavaScript files in src and subdirectories"
+		echo "    \"!test/*\"            - Exclude all files in test directory"
+		echo ""
+		echo "Examples:"
+		echo "  context --include=\"src/*.js\" --exclude=\"*.test.js\""
+		echo "  context \"src/*.js\" \"*.md\" --max-size=1MB"
+		exit 0
+		;;
+	--*)
+		echo "Unknown parameter: $1"
+		exit 1
+		;;
+	*)
+		INCLUDE+=("$1")
+		shift
+		;;
+	esac
+done
+
+# Convert human-readable size to bytes
+convert_to_bytes() {
+	local size=$1
+	local num=${size%[KMG]*}
+	local unit=${size#"$num"}
+
+	case $unit in
+	KB | K) echo $((num * 1024)) ;;
+	MB | M) echo $((num * 1024 * 1024)) ;;
+	GB | G) echo $((num * 1024 * 1024 * 1024)) ;;
+	*) echo "$num" ;;
+	esac
+}
+
+MAX_SIZE_BYTES=$(convert_to_bytes "$MAX_SIZE")
+
+# Get all matching files
+find_files() {
+	local all_files=""
+
+	for pattern in "${INCLUDE[@]}"; do
+		if [ -f "$pattern" ]; then
+			all_files="$all_files"$'\n'"$pattern"
+		else
+			# Convert find patterns to fd patterns
+			local fd_pattern="$pattern"
+			# Remove leading . if present
+			fd_pattern="${fd_pattern#./}"
+			# Convert path patterns to glob patterns
+			if [[ "$fd_pattern" == *"*"* ]]; then
+				local found_files
+				found_files=$($FD_CMD --type f --hidden --no-ignore --glob "$fd_pattern" .)
+				if [ -n "$found_files" ]; then
+					all_files="$all_files"$'\n'"$found_files"
+				fi
+			else
+				# Direct file matching
+				if [ -f "$fd_pattern" ]; then
+					all_files="$all_files"$'\n'"$fd_pattern"
+				fi
+			fi
+		fi
+	done
+
+	# Process exclusions
+	for exclude_pattern in "${EXCLUDE[@]}"; do
+		all_files=$(echo "$all_files" | rg -v "$exclude_pattern")
+	done
+
+	echo "$all_files" | rg -v "^$" | sort | uniq
+}
+
+ALL_FILES=$(find_files)
+TOTAL_SIZE=0
+
+# Human-readable size function
+human_readable_size() {
+	local size=$1
+	local units=("B" "KB" "MB" "GB" "TB")
+	local unit_index=0
+	local size_float=$size
+
+	while [ "$(echo "$size_float >= 1024" | bc -l)" -eq 1 ] && [ $unit_index -lt 4 ]; do
+		size_float=$(echo "scale=2; $size_float / 1024" | bc -l)
+		unit_index=$((unit_index + 1))
+	done
+
+	size_float=${size_float%.0*}
+	echo "$size_float ${units[$unit_index]}"
+}
+
+# Start Markdown output
+echo "# Code Context"
+echo ""
+
+# Include git information if requested
+if [ "$INCLUDE_GIT" = true ] && command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	echo "## Repository Information"
+	echo ""
+	echo "Branch: $(git branch --show-current)"
+	echo ""
+	echo "Recent commits:"
+	echo ""
+	git log -n 3 --pretty=format:"* %h: %s (%an, %ar)" | while read -r line; do
+		echo "$line"
+	done
+	echo ""
+	echo ""
+fi
+
+# Show repository map using found files
+echo "## Repository Map"
+echo ""
+echo "$ALL_FILES" | sort | while read -r file; do
+	# Remove leading ./ for cleaner display
+	clean_file="${file#./}"
+	echo "- $clean_file"
+done
+echo ""
+
+echo "## Files"
+echo ""
+
+# Process each file
+for file in $ALL_FILES; do
+	if [ ! -f "$file" ]; then
+		continue
+	fi
+
+	file_size=$(wc -c <"$file")
+	TOTAL_SIZE=$((TOTAL_SIZE + file_size))
+
+	if [ $TOTAL_SIZE -gt "$MAX_SIZE_BYTES" ]; then
+		echo "Error: Total context size exceeds maximum allowed size ($(human_readable_size "$MAX_SIZE_BYTES")). Reduce file scope or increase --max-size." >&2
+		exit 1
+	fi
+
+	file_content=$(cat "$file")
+
+	if [ "$SHOW_FILE_SIZES" = true ]; then
+		echo "### $file ($(human_readable_size "$file_size"))"
+	else
+		echo "### $file"
+	fi
+	echo ""
+
+	# Use proper markdown code block with file extension for syntax highlighting
+	echo "\`\`\` ${file##*.}"
+	echo "$file_content"
+	echo "\`\`\`"
+	echo ""
+done
+
+# Include context prompt if requested
+if [ "$INCLUDE_PROMPT" = true ]; then
+	echo "## Context Prompt"
+	echo ""
+
+	# Check if prompt file exists
+	if [ -f "$PROMPT_FILE" ]; then
+		cat "$PROMPT_FILE"
+	else
+		echo "Error: Prompt file not found: $PROMPT_FILE" >&2
+		exit 1
+	fi
+	echo ""
+fi
+
+exit 0
