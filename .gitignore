@@ -75,12 +75,6 @@ pyvenv.cfg
 pip-selfcheck.json
 
 ### VisualStudioCode ###
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
 
 # Local History for Visual Studio Code
 .history/
@@ -121,6 +115,11 @@ $RECYCLE.BIN/
 
 # Obsidian workspace
 .obsidian/workspace.json
+.obsidian
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,linux,macos,dotenv,react,venv,visualstudiocode
 
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
